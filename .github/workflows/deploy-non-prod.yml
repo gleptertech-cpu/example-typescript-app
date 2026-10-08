@@ -1,0 +1,123 @@
+name: Deploy (dev & staging)
+
+# Any feature/fix/patch branch deploys straight to dev and staging on
+# every push - fast feedback in a real environment, before a PR even
+# exists. Production only deploys separately, on merge to main (see
+# deploy-prod.yml) - nothing here ever touches prod.
+on:
+  push:
+    branches:
+      - "feature/**"
+      - "fix/**"
+      - "patch/**"
+    paths-ignore:
+      - "terraform/**"
+
+permissions:
+  id-token: write # required for OIDC -> AWS role assumption, no static keys
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-2
+
+jobs:
+  # Re-run the same checks as ci.yml before deploying anywhere. Kept
+  # separate rather than depending on ci.yml's own run, since cross-workflow
+  # `needs` isn't a thing in GitHub Actions - only jobs within the same
+  # workflow file can depend on each other.
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run build
+
+  # Build once, push to both environments' ECR repos. A single job (not
+  # matrixed) so there's exactly one image built from exactly one checkout,
+  # pushed twice - rather than building the same code twice in parallel.
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTE: assumes an IAM role already exists with a trust policy for
+      # GitHub's OIDC provider, scoped to this repo. See PROPOSAL.md.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/github-actions-example-typescript-app
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - name: Build image once
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: docker build -t local-build:${{ github.sha }} .
+
+      # Each environment has its own ECR repo (named by Terraform as
+      # "example-typescript-app-<environment>") - same image, tagged and
+      # pushed to each repo in turn.
+      - name: Tag and push to dev and staging
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          for ENVIRONMENT in dev staging; do
+            IMAGE="$REGISTRY/example-typescript-app-$ENVIRONMENT:${{ github.sha }}"
+            docker tag local-build:${{ github.sha }} "$IMAGE"
+            docker push "$IMAGE"
+          done
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    strategy:
+      matrix:
+        environment: [dev, staging]
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/github-actions-example-typescript-app
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      # Recomputed here rather than passed from build-and-push via job
+      # outputs - deliberately, since matrix jobs don't reliably merge
+      # per-key outputs across legs (the last leg to finish can silently
+      # drop another leg's output). The image tag is fully deterministic
+      # from the registry, environment, and commit SHA, so there's nothing
+      # to pass - each leg just derives the same value independently.
+      - name: Render new task definition
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECS_SERVICE: example-typescript-app-${{ matrix.environment }}
+        run: |
+          echo "image=$REGISTRY/example-typescript-app-${{ matrix.environment }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_SERVICE" \
+            --query taskDefinition \
+            > task-definition.json
+
+      - uses: aws-actions/amazon-ecs-render-task-definition@v1
+        id: render
+        with:
+          task-definition: task-definition.json
+          container-name: example-typescript-app
+          image: ${{ steps.image.outputs.image }}
+
+      - uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          cluster: example-typescript-app-${{ matrix.environment }}
+          service: example-typescript-app-${{ matrix.environment }}
+          wait-for-service-stability: true

@@ -1,0 +1,7 @@
+dist
+node_modules
+package-lock.json
+
+# Prettier's YAML parser chokes on some valid GitHub Actions syntax -
+# workflow correctness is GitHub's own job to validate, not Prettier's.
+.github/

@@ -1,0 +1,107 @@
+name: Terraform
+
+# Infra-only pipeline - only triggers on changes under terraform/, and
+# never builds, tests, or touches the application. The reverse is also
+# true: ci.yml and the deploy workflows ignore terraform/** entirely, so
+# an app-only change never re-plans or re-applies infrastructure, and an
+# infra-only change never rebuilds or redeploys the app image.
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+
+permissions:
+  id-token: write # required for OIDC -> AWS role assumption, no static keys
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-2
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Terraform format check
+        run: terraform fmt -check -recursive terraform/
+
+      - name: Terraform validate
+        working-directory: terraform
+        env:
+          # main.tf resolves environment from the selected workspace and
+          # deliberately errors in the default one. `terraform workspace
+          # select` needs real backend access, which -backend=false
+          # doesn't give it - TF_WORKSPACE sets it directly instead,
+          # without needing to query the backend at all.
+          TF_WORKSPACE: dev
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      # IaC scanning - scans the Terraform itself for misconfigurations
+      # (e.g. a security group open to 0.0.0.0/0 where it shouldn't be).
+      # Placeholder, not wired up for real - needs no token, but still
+      # needs the action actually added. See PROPOSAL.md.
+      - name: Checkov scan (placeholder - Terraform IaC scanning)
+        run: echo "TODO: bridgecrewio/checkov-action against terraform/, fail on new high/critical findings"
+
+  # PR-time plan, one per environment, so a reviewer can see exactly what
+  # each environment's infrastructure would change before approving.
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: validate
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTE: a separate, more-privileged role than the app-deploy
+      # workflows use - this one needs to create/modify IAM roles,
+      # security groups, the ALB, etc., not just update an ECS service.
+      # Keeping it separate is a least-privilege decision, not an
+      # accident. See PROPOSAL.md.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/github-actions-example-typescript-app-terraform
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform plan (${{ matrix.environment }})
+        working-directory: terraform
+        env:
+          TF_WORKSPACE: ${{ matrix.environment }}
+        run: |
+          terraform init
+          terraform plan -input=false
+
+  # Merge-time apply, one per environment. Runs after validate, and only
+  # on push to main - i.e. only after a PR touching terraform/ has
+  # actually been reviewed and merged (see CODEOWNERS/branch protection).
+  apply:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: validate
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/github-actions-example-typescript-app-terraform
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform apply (${{ matrix.environment }})
+        working-directory: terraform
+        env:
+          TF_WORKSPACE: ${{ matrix.environment }}
+        run: |
+          terraform init
+          terraform apply -input=false -auto-approve

@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # npm dependencies (just @types/node and typescript today, but this
+  # scales as the app grows real dependencies)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # The GitHub Actions themselves (e.g. actions/checkout, aws-actions/*)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Terraform provider versions
+  - package-ecosystem: "terraform"
+    directory: "/terraform"
+    schedule:
+      interval: "weekly"

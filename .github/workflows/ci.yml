@@ -1,0 +1,67 @@
+name: CI
+
+# App-only pipeline - deliberately ignores terraform/**, which has its own
+# dedicated workflow (terraform.yml). A pure infra change shouldn't lint,
+# build, or Docker-build the app again for no reason, and vice versa.
+on:
+  pull_request:
+    paths-ignore:
+      - "terraform/**"
+  push:
+    branches:
+      - main
+      - "feature/**"
+      - "fix/**"
+      - "patch/**"
+    paths-ignore:
+      - "terraform/**"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run build
+
+      # No test suite exists yet (none did before this exercise either) -
+      # this is a named gap, not a skipped step. See PROPOSAL.md for why
+      # it's not the first thing fixed.
+      - name: Tests (none yet)
+        run: echo "No tests exist yet - tracked as a known gap in PROPOSAL.md"
+
+      - name: Build container image (validates the Dockerfile on every change)
+        run: docker build -t ci-check:${{ github.sha }} .
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Placeholders below, not wired up for real - each needs an account/
+      # token this exercise doesn't have. Shown as named, ordered steps so
+      # the pipeline shape is clear; see PROPOSAL.md for what each gate is
+      # for and why these weren't fully configured in the hour available.
+      # (Checkov - IaC scanning - lives in terraform.yml instead, since it
+      # scans Terraform specifically, not application code.)
+
+      # SAST - scans the code I wrote, for bugs and security flaws.
+      - name: SonarQube scan (placeholder - needs SONAR_TOKEN + a SonarQube/SonarCloud project)
+        run: echo "TODO: sonarsource/sonarqube-scan-action, fail the job on new Quality Gate issues"
+
+      # Code-level security scanning focused on data flow - where does
+      # sensitive data (PII, secrets, tokens) go, and is it handled safely.
+      - name: Bearer scan (placeholder - needs to be added as a step/action)
+        run: echo "TODO: bearer/bearer-action, fail on new high/critical findings"
+
+      # SCA - scans dependencies (package-lock.json) for known CVEs.
+      - name: Snyk scan (placeholder - needs SNYK_TOKEN)
+        run: echo "TODO: snyk/actions/node, fail on new high/critical vulnerabilities"
