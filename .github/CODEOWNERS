@@ -3,10 +3,9 @@
 # review from Code Owners (see PROPOSAL.md - this needs a one-time repo
 # settings change, not something expressible in a workflow file).
 
-# TODO: replace with the actual reviewer(s)/team for this repo
-* @YOUR-GITHUB-USERNAME
+* @gleptertech-cpu
 
 # Changes to infrastructure or the deploy pipeline itself are the highest-
 # risk changes in this repo - worth a tighter review bar than app code.
-/terraform/          @YOUR-GITHUB-USERNAME
-/.github/workflows/  @YOUR-GITHUB-USERNAME
+/terraform/          @gleptertech-cpu
+/.github/workflows/  @gleptertech-cpu
